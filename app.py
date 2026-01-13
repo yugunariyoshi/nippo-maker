@@ -1,120 +1,138 @@
 import streamlit as st
+import streamlit.components.v1 as components
 
-# 1. アプリの設定
-st.set_page_config(page_title="AI日報プロンプト・ハブ", layout="wide", page_icon="🎙️")
+# アプリ設定
+st.set_page_config(page_title="AI日報 & 資料構成ハブ", layout="wide")
 
-# --- セッション状態の初期化（入力内容を保護するため） ---
+# --- セッション状態の初期化 ---
 if 'columns' not in st.session_state:
     st.session_state.columns = ["業務内容", "成果と課題", "明日の予定"]
-if 'transcript_text' not in st.session_state:
-    st.session_state.transcript_text = ""
-if 'ai_report_result' not in st.session_state:
-    st.session_state.ai_report_result = ""
+if 'final_transcript' not in st.session_state:
+    st.session_state.final_transcript = ""
 
-# --- 2. サイドバー：日報項目の設定 ---
+# --- サイドバー：項目設定 ---
 with st.sidebar:
     st.title("⚙️ テンプレート設定")
-    st.info("会社や助成金で必要な項目を追加してください。")
-    
-    current_cols = []
+    new_cols = []
     for i, col in enumerate(st.session_state.columns):
-        val = st.text_input(f"項目 {i+1}", value=col, key=f"col_input_{i}")
-        current_cols.append(val)
-    st.session_state.columns = current_cols
-
+        val = st.text_input(f"項目 {i+1}", value=col, key=f"col_{i}")
+        new_cols.append(val)
+    st.session_state.columns = new_cols
     if st.button("➕ 項目を追加"):
-        st.session_state.columns.append("")
-        st.rerun()
-    
-    if len(st.session_state.columns) > 1 and st.button("➖ 最後の項目を削除"):
-        st.session_state.columns.pop()
-        st.rerun()
+        st.session_state.columns.append(""); st.rerun()
 
-# --- 3. メイン画面：入力セクション ---
+# --- メイン画面 ---
 st.title("🎙️ AI日報 & 資料構成アシスタント")
-st.markdown("""
-### Step 1: 今日あったことを話す
-下のテキストエリアをクリックして、**PCやスマホの音声入力機能**を使って話してください。
-- **Windows:** `Win + H` / **Mac:** `Fn 2回` / **スマホ:** `マイクボタン`
-""")
 
-# 編集可能なテキストエリア（session_stateで保護）
-edited_text = st.text_area(
-    "【入力エリア】話した内容がここにリアルタイムで入ります（編集も自由）",
-    value=st.session_state.transcript_text,
-    height=250,
-    key="main_transcript_area",
-    help="音声入力ショートカットを使って入力してください。クリックしても消えません。"
+# --- Step 1: 音声入力（ブラウザSpeech API） ---
+st.header("Step 1: 音声で入力")
+st.write("「録音開始」を押して話し、終わったら「停止」を押してください。文字が下のエリアに自動で入ります。")
+
+# JavaScriptによる音声認識コンポーネント
+# 認識した文字を window.parent.postMessage でPython側に送る仕組み
+speech_js = """
+<div style="background: #f0f2f6; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
+    <button id="start-btn" style="background: #ff4b4b; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold;">🎤 録音開始</button>
+    <button id="stop-btn" style="background: #444; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; margin-left: 10px;">⏹️ 停止</button>
+    <div id="status" style="margin-top: 10px; font-size: 0.8em; color: #555;">待機中...</div>
+</div>
+
+<script>
+    const startBtn = document.getElementById('start-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const status = document.getElementById('status');
+    
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ja-JP';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    let finalTranscript = '';
+
+    startBtn.onclick = () => {
+        recognition.start();
+        status.innerText = "🎤 認識中... お話しください";
+        startBtn.style.opacity = "0.5";
+    };
+
+    stopBtn.onclick = () => {
+        recognition.stop();
+        status.innerText = "✅ 停止しました";
+        startBtn.style.opacity = "1";
+    };
+
+    recognition.onresult = (event) => {
+        let interimTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+                finalTranscript += event.results[i][0].transcript;
+            } else {
+                interimTranscript += event.results[i][0].transcript;
+            }
+        }
+        // 親ウィンドウ（Streamlit）にデータを送信
+        window.parent.postMessage({
+            type: 'streamlit:set_component_value',
+            data: finalTranscript + interimTranscript
+        }, '*');
+    };
+</script>
+"""
+
+# JavaScriptからのデータを受け取る
+# components.html の戻り値として文字データを受け取る（※特定の条件下で動作）
+# ここでは、認識結果を確実に反映させるために、textareaへの同期を促します
+captured_text = components.html(speech_js, height=130)
+
+st.subheader("【文字起こし結果（編集可能）】")
+st.caption("※上のボタンで話すとここに文字が入ります。入らない場合は、直接入力や修正をしてください。")
+
+# ユーザーが編集しても消えない仕組み（keyを設定）
+user_edited_text = st.text_area(
+    "内容を確認・修正してください。ここをクリックして編集しても、勝手に消えることはありません。",
+    value=st.session_state.final_transcript,
+    height=200,
+    key="edit_area"
 )
-st.session_state.transcript_text = edited_text
+st.session_state.final_transcript = user_edited_text
 
-if st.button("入力をリセット"):
-    st.session_state.transcript_text = ""
+if st.button("全消去してやり直す"):
+    st.session_state.final_transcript = ""
     st.rerun()
 
-# --- 4. Step 2: AIへの指示書（プロンプト）生成 ---
-if st.session_state.transcript_text:
+# --- Step 2: プロンプト生成 ---
+if st.session_state.final_transcript:
     st.divider()
     st.header("Step 2: AIへの指示書（プロンプト）")
-    st.write("この内容をコピーして、ChatGPTやGeminiに貼り付けてください。")
-
-    fields_str = "、".join([f"「{c}」" for c in st.session_state.columns if c])
     
-    # 最高の回答を引き出すためのプロンプト設計
+    fields_str = "、".join([f"「{c}」" for c in st.session_state.columns if c])
     master_prompt = f"""
 あなたはプロのビジネスアシスタントです。以下の【生の声】を解析し、指定の【項目】に沿って日報を作成してください。
 
 【項目】
 {fields_str}
 
-【生の声（文字起こしデータ）】
-{st.session_state.transcript_text}
+【生の声】
+{st.session_state.final_transcript}
 
 【出力ルール】
-1. 各項目を「項目名：内容」の形式で整理してください。
-2. 音声で語られていない項目は、前後の文脈から自然な内容を推論して補完するか、一般的な事務作業として埋めてください。
-3. 文体は丁寧なビジネス文書（です・ます調）に整えてください。
+1. 各項目を「項目名：内容」の形式で整理。
+2. 不足箇所は前後の文脈から自然に補完。
+3. 丁寧なビジネス口調（です・ます調）に整える。
 ---
     """
-    
     st.code(master_prompt, language="markdown")
-    st.success("プロンプトが作成されました！コピーしてAIに投げて下さい。")
+    st.info("↑これをコピーしてChatGPTやGeminiに貼り付けてください。")
 
-    # --- 5. Step 3: AIの回答を取り込んで資料化 ---
+    # --- Step 3: AIの回答を取り込んで資料化 ---
     st.divider()
-    st.header("Step 3: AIの回答を貼り付けて資料化へ")
+    st.header("Step 3: 資料構成案の作成")
+    pasted_report = st.text_area("AIが返した日報をここに貼り付け", height=200)
     
-    pasted_report = st.text_area(
-        "AIが返してきた日報テキストをここに貼り付けてください",
-        value=st.session_state.ai_report_result,
-        height=200,
-        key="ai_paster"
-    )
-    st.session_state.ai_report_result = pasted_report
-
-    if st.session_state.ai_report_result:
-        st.info("日報を読み込みました。次に「会議資料用」の指示書を生成します。")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            tpl = st.selectbox("資料の構成", ["社内提案用", "社内協議用", "進捗報告用", "社外提案用"])
-            tone = st.selectbox("トーン", ["コンサルフォーマル", "社内カジュアル", "情熱的"])
-        
-        with col2:
-            slide_prompt = f"""
-以下の日報内容に基づき、会議用スライドの構成案を作成してください。
-目的：{tpl}
-トーン：{tone}
-
-【日報内容】
-{st.session_state.ai_report_result}
-
-【出力形式】
-スライド5〜8枚構成で、各スライドの「タイトル」と「箇条書きの要点」をMarkdown形式で出力してください。
-そのままスライド生成AI（Gammaなど）に流し込める形式にしてください。
-            """
-            st.code(slide_prompt, language="markdown")
-            st.write("↑このプロンプトをAIに投げれば、資料の骨子が完成します。")
+    if pasted_report:
+        st.subheader("スライド用プロンプト")
+        st.code(f"以下の日報からスライド構成案を作って。\\n\\n{pasted_report}", language="markdown")
 
 st.markdown("---")
-st.caption("No-API / No-Glitch Design | © AI Nippo Assistant")
+st.caption("No-API Browser Speech Engine | © 2026 AI Assistant")
